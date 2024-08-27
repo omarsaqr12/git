@@ -1,60 +1,212 @@
-[![progress-banner](https://backend.codecrafters.io/progress/git/006c9c5c-65c6-40f2-bfcf-254d0d9d4b0d)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Simple Git Implementation in Python
 
-This is a starting point for Python solutions to the
-["Build Your Own Git" Challenge](https://codecrafters.io/challenges/git).
+This project is a simplified implementation of some core Git functionalities using Python. It demonstrates how Git manages objects like blobs, trees, and commits under the hood by manually handling hashing, compression, and file storage.
 
-In this challenge, you'll build a small Git implementation that's capable of
-initializing a repository, creating commits and cloning a public repository.
-Along the way we'll learn about the `.git` directory, Git objects (blobs,
-commits, trees etc.), Git's transfer protocols and more.
+## Table of Contents
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Initialize Repository](#initialize-repository)
+  - [Hash Object](#hash-object)
+  - [Cat File](#cat-file)
+  - [Write Tree](#write-tree)
+  - [Commit Tree](#commit-tree)
+  - [List Tree](#list-tree)
+- [Author](#author)
+- [License](#license)
 
-# Passing the first stage
+## Features
 
-The entry point for your Git implementation is in `app/main.py`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
+- **Initialize Repository**: Create a new Git repository by setting up the necessary `.git` directory structure.
+- **Hash Object**: Create a blob object from a file and store it in the `.git/objects` directory.
+- **Cat File**: Retrieve and display the content of a Git object (blob, tree, commit) by its SHA-1 hash.
+- **Write Tree**: Generate a tree object representing the current directory structure and store it in the `.git/objects` directory.
+- **Commit Tree**: Create a commit object that references a tree object and optionally a parent commit.
+- **List Tree**: Display the contents of a tree object in a human-readable format.
 
-```sh
-git add .
-git commit -m "pass 1st stage" # any msg
-git push origin master
+## Prerequisites
+
+- Python 3.x installed on your system.
+- Basic understanding of Git and its internal workings.
+- Operating system with support for Python file operations (tested on Unix-like systems).
+
+## Installation
+
+1. **Clone the Repository**
+
+   ```bash
+   git clone https://github.com/yourusername/simple-git-python.git
+   ```
+
+2. **Navigate to the Project Directory**
+
+   ```bash
+   cd simple-git-python
+   ```
+
+3. **Ensure Dependencies are Met**
+
+   This script uses standard Python libraries, so no additional packages are required.
+
+## Usage
+
+Run the script using the Python interpreter followed by the desired command and its arguments.
+
+```bash
+python git.py <command> [arguments]
 ```
 
-That's all!
+### Initialize Repository
 
-# Stage 2 & beyond
+Sets up a new Git repository in the current directory by creating the necessary `.git` folders and files.
 
-Note: This section is for stages 2 and beyond.
+**Command**
 
-1. Ensure you have `python` installed locally
-1. Run `./your_program.sh` to run your Git implementation, which is implemented
-   in `app/main.py`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
-
-# Testing locally
-
-The `your_program.sh` script is expected to operate on the `.git` folder inside
-the current working directory. If you're running this inside the root of this
-repository, you might end up accidentally damaging your repository's `.git`
-folder.
-
-We suggest executing `your_program.sh` in a different folder when testing
-locally. For example:
-
-```sh
-mkdir -p /tmp/testing && cd /tmp/testing
-/path/to/your/repo/your_program.sh init
+```bash
+python git.py init
 ```
 
-To make this easier to type out, you could add a
-[shell alias](https://shapeshed.com/unix-alias/):
+**Output**
 
-```sh
-alias mygit=/path/to/your/repo/your_program.sh
-
-mkdir -p /tmp/testing && cd /tmp/testing
-mygit init
 ```
+Initialized git directory
+```
+
+### Hash Object
+
+Creates a blob object from a specified file and stores it in the `.git/objects` directory.
+
+**Command**
+
+```bash
+python git.py hash-object -w <file_path>
+```
+
+**Parameters**
+
+- `-w`: Write the object to the object database.
+- `<file_path>`: Path to the file to be hashed.
+
+**Example**
+
+```bash
+python git.py hash-object -w example.txt
+```
+
+**Output**
+
+```
+<sha1_hash_of_the_blob>
+```
+
+### Cat File
+
+Displays the content of a Git object identified by its SHA-1 hash.
+
+**Command**
+
+```bash
+python git.py cat-file -p <object_sha>
+```
+
+**Parameters**
+
+- `-p`: Pretty-print the contents of the object.
+- `<object_sha>`: SHA-1 hash of the object to display.
+
+**Example**
+
+```bash
+python git.py cat-file -p e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+```
+
+**Output**
+
+```
+<content_of_the_object>
+```
+
+### Write Tree
+
+Generates a tree object representing the current directory structure and stores it in the `.git/objects` directory.
+
+**Command**
+
+```bash
+python git.py write-tree
+```
+
+**Output**
+
+```
+<sha1_hash_of_the_tree>
+```
+
+### Commit Tree
+
+Creates a commit object that references a tree object and optionally a parent commit.
+
+**Command**
+
+```bash
+python git.py commit-tree <tree_sha> -m "<commit_message>" [-p <parent_sha>]
+```
+
+**Parameters**
+
+- `<tree_sha>`: SHA-1 hash of the tree object to commit.
+- `-m`: Commit message.
+- `-p`: (Optional) SHA-1 hash of the parent commit.
+
+**Example**
+
+```bash
+python git.py commit-tree a1b2c3d4 -m "Initial commit"
+```
+
+**Output**
+
+```
+<sha1_hash_of_the_commit>
+```
+
+### List Tree
+
+Displays the contents of a tree object in a human-readable format.
+
+**Command**
+
+```bash
+python git.py ls-tree <tree_sha>
+```
+
+**Parameters**
+
+- `<tree_sha>`: SHA-1 hash of the tree object to list.
+
+**Example**
+
+```bash
+python git.py ls-tree d4c3b2a1
+```
+
+**Output**
+
+```
+<list_of_files_and_directories_in_the_tree>
+```
+
+## Author
+
+**Omar Saqr**
+- Email: [omar_saqr@example.com](mailto:omar_saqr@example.com)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+**Note**: This implementation is for educational purposes and does not cover all features and edge cases of the actual Git version control system. Use it to understand the fundamentals of how Git works internally.
