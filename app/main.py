@@ -1,219 +1,210 @@
-import sys
+"""Small SHA-1 loose-object Git implementation for the CodeCrafters exercise.
+
+This is intentionally not a full Git client: the working directory is walked
+without an index, and only loose objects in the current directory are read.
+"""
+
+import argparse
+import hashlib
 import os
-import zlib
-import hashlib 
-import re
 from pathlib import Path
-from datetime import datetime, timezone
-def create_commit(tree_sha, parent_sha, message):
-    # Author and committer details
-    name = "Omar Saqr"
-    email = "omar_saqr@example.com"
-    
-    # Current timestamp in seconds since epoch
-    timestamp = int(datetime.now(tz=timezone.utc).timestamp())
-    timezone_offset = "+0000"  # UTC timezone
+import re
+import stat
+import sys
+import time
+import zlib
 
-    # Prepare the commit content
-    commit_content = [
-        f"tree {tree_sha}",
-    ]
-
-    # Add parent SHA if present
-    if parent_sha:
-        commit_content.append(f"parent {parent_sha}")
-    
-    # Add author and committer details
-    author_info = f"{name} <{email}> {timestamp} {timezone_offset}"
-    commit_content.append(f"author {author_info}")
-    commit_content.append(f"committer {author_info}")
-    
-    # Add commit message
-    commit_content.append("")
-    commit_content.append(message)
-
-    # Join all parts of the commit content
-    commit_content_str = "\n".join(commit_content)
-    
-    # Compute the header
-    header = f"commit {len(commit_content_str)}\0"
-    content = header + commit_content_str+"\n"
-
-    # Compute the SHA1 hash of the commit
-    commit_sha = hashlib.sha1(content.encode('utf-8')).hexdigest()
-
-    # Write the commit object to the .git/objects directory
-    dir_name = commit_sha[:2]
-    file_name = commit_sha[2:]
-    object_path = Path(f".git/objects/{dir_name}/{file_name}")
-
-    if not object_path.exists():
-        os.makedirs(object_path.parent, exist_ok=True)
-        with open(object_path, 'wb') as f:
-            f.write(zlib.compress(content.encode('utf-8')))
-
-    return commit_sha
+GIT_DIR = Path(".git")
+OBJECT_ID = re.compile(r"[0-9a-fA-F]{40}\Z")
+INTERNAL_DATE = re.compile(r"@?([0-9]+) ([+-][0-9]{4})\Z")
 
 
+def object_bytes(kind, data):
+    return kind.encode("ascii") + b" " + str(len(data)).encode("ascii") + b"\0" + data
 
 
-def create_blob(file_path):
-    with open(file_path, 'r') as f:
-        data = f.read()
-    header = f"blob {len(data)}\0"
-    content = header + data
-    sha = hashlib.sha1(content.encode('utf-8')).hexdigest()
+def object_id(kind, data):
+    return hashlib.sha1(object_bytes(kind, data)).hexdigest()
 
-    dir_name = sha[:2]
-    file_name = sha[2:]
-    object_path = Path(f".git/objects/{dir_name}/{file_name}")
 
-    if not object_path.exists():
-        os.makedirs(object_path.parent, exist_ok=True)
-        with open(object_path, 'wb') as f:
-            f.write(zlib.compress(content.encode('utf-8')))
-    
+def store_object(kind, data):
+    if not (GIT_DIR / "HEAD").is_file() or not (GIT_DIR / "objects").is_dir():
+        raise ValueError("run init in this directory before writing Git objects")
+    raw = object_bytes(kind, data)
+    sha = hashlib.sha1(raw).hexdigest()
+    path = GIT_DIR / "objects" / sha[:2] / sha[2:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as stream:
+            stream.write(zlib.compress(raw))
+    except FileExistsError:
+        pass
     return sha
 
-def create_tree(directory):
+
+def load_object(sha, expected_type=None):
+    if not OBJECT_ID.fullmatch(sha):
+        raise ValueError("expected a full 40-character SHA-1 object ID")
+    sha = sha.lower()
+    path = GIT_DIR / "objects" / sha[:2] / sha[2:]
+    raw = zlib.decompress(path.read_bytes())
+    if hashlib.sha1(raw).hexdigest() != sha:
+        raise ValueError("object hash does not match its file name")
+    header, separator, data = raw.partition(b"\0")
+    kind, delimiter, length = header.partition(b" ")
+    if not separator or not delimiter or not length.isdigit() or int(length) != len(data):
+        raise ValueError("invalid loose-object header or size")
+    if kind not in (b"blob", b"tree", b"commit", b"tag"):
+        raise ValueError("unrecognized Git object type")
+    kind_str = kind.decode("ascii")
+    if expected_type is not None and kind_str != expected_type:
+        raise ValueError(f"expected {expected_type} object, got {kind_str}")
+    return kind_str, data
+
+
+def tree_entries(data):
+    """Parse the binary Git tree format without confusing SHA bytes and names."""
+    cursor = 0
+    while cursor < len(data):
+        space = data.find(b" ", cursor)
+        nul = data.find(b"\0", space + 1)
+        if space <= cursor or nul <= space + 1 or nul + 21 > len(data):
+            raise ValueError("malformed tree entry")
+        mode = data[cursor:space]
+        name = data[space + 1:nul]
+        if not mode or not all(48 <= byte <= 55 for byte in mode):
+            raise ValueError("invalid tree entry mode")
+        if b"/" in name:
+            raise ValueError("invalid tree entry name")
+        oid = data[nul + 1:nul + 21].hex()
+        yield mode, name, oid
+        cursor = nul + 21
+
+
+def write_tree(directory, root=True):
     entries = []
-
-    for item in sorted(directory.iterdir()):
-        if item.name == ".git":
+    for path in directory.iterdir():
+        if path.name == ".git":
             continue
-        mode = "40000" if item.is_dir() else "100644"
-        name = item.name.encode('utf-8')
-        if item.is_dir():
-            sha = create_tree(item)
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            mode = b"40000"
+            sha = write_tree(path, root=False)
+            if sha is None:
+                continue  # Git does not store empty directories.
+        elif stat.S_ISLNK(info.st_mode):
+            mode = b"120000"
+            sha = store_object("blob", os.fsencode(os.readlink(path)))
+        elif stat.S_ISREG(info.st_mode):
+            mode = b"100755" if info.st_mode & 0o111 else b"100644"
+            sha = store_object("blob", path.read_bytes())
         else:
-            sha = create_blob(item)
-        entries.append((mode, name, sha))
-
-    tree_content = b"".join(
-        mode.encode('utf-8') + b" " + name + b"\0" + bytes.fromhex(sha)
-        for mode, name, sha in entries
-    )
-
-    header = f"tree {len(tree_content)}\0".encode('utf-8')
-    content = header + tree_content
-    tree_sha = hashlib.sha1(content).hexdigest()
-
-    dir_name = tree_sha[:2]
-    file_name = tree_sha[2:]
-    object_path = Path(f".git/objects/{dir_name}/{file_name}")
-
-    if not object_path.exists():
-        os.makedirs(object_path.parent, exist_ok=True)
-        with open(object_path, 'wb') as f:
-            f.write(zlib.compress(content))
-    
-    return tree_sha
-
-def extract_chars_until_number(byte_obj):
-    # This will hold the collected bytes in reverse order
-    collected_bytes = []
-
-    # Iterate from the end of the byte object
-    for byte in reversed(byte_obj):
-        if 48 <= byte <= 57:  # ASCII values for '0' to '9'
-            break
-        collected_bytes.append(byte)
-
-    # Reverse the collected bytes to restore original order
-    collected_bytes.reverse()
-
-    # Decode the collected bytes to a string using a fallback encoding
-    try:
-        result = bytes(collected_bytes).decode('utf-8', errors='ignore')
-    except UnicodeDecodeError:
-        result = bytes(collected_bytes).decode('iso-8859-1', errors='ignore')
-
-    return result
-
-def main():
-    # You can use print statements as follows for debugging, they'll be visible when running tests.
-    # print("Logs from your program will appear here!")
-
-    # Uncomment this block to pass the first stage
-    #
-    command = sys.argv[1]
-    ha=''
-    if command == "init":
-        os.mkdir(".git")
-        os.mkdir(".git/objects")
-        os.mkdir(".git/refs")
-        with open(".git/HEAD", "w") as f:
-            f.write("ref: refs/heads/main\n")
-        print("Initialized git directory")
-    elif command=='cat-file':
-        with open(f'.git/objects/{sys.argv[3][-40:-38]}/{sys.argv[3][-38:]}', 'rb') as file:
-            data = file.read()
-            data=zlib.decompress(data)
-            print(data.decode('utf-8').split('\x00')[-1],end='')
-    elif command=='hash-object':
-        with open(f'{sys.argv[3]}', 'r') as file:
-            data=file.read()
-            name = (f"blob {len(data)}\0" + data)
-            x=name
-            name=name.encode('utf-8')
-            name=hashlib.sha1(name).hexdigest()
-            print(name)
-            name1=name[0:2]
-            name2=name[2:]
-            os.mkdir(f".git/objects/{name1}")
-            with open(f'.git/objects/{name1}/{name2}', 'wb') as file:
-                file.write(zlib.compress(x.encode("utf-8")))
-    elif command=="write-tree":
-        root_dir = Path(os.curdir)  # Convert the string to a Path object
-        tree_sha = create_tree(root_dir)
-        ha=tree_sha
-        print(tree_sha)
-    elif command == "commit-tree":
-        tree_sha = sys.argv[2]
-        parent_sha = None
-        message = ""
-
-        for i in range(3, len(sys.argv)):
-            if sys.argv[i] == "-p":
-                parent_sha = sys.argv[i + 1]
-            elif sys.argv[i] == "-m":
-                message = sys.argv[i + 1]
-
-        commit_sha = create_commit(tree_sha, parent_sha, message)
-        print(commit_sha)
+            raise ValueError(f"unsupported file type: {path}")
+        name = os.fsencode(path.name)
+        entries.append((name + (b"/" if mode == b"40000" else b""), mode, name, sha))
+    if not entries and not root:
+        return None
+    entries.sort(key=lambda item: item[0])
+    data = b"".join(mode + b" " + name + b"\0" + bytes.fromhex(sha)
+                    for _, mode, name, sha in entries)
+    return store_object("tree", data)
 
 
-    elif command=='ls-tree':
-        with open(f'.git/objects/{sys.argv[3][-40:-38]}/{sys.argv[3][-38:]}', 'rb') as file:
-            data = file.read()
-            data=zlib.decompress(data)  
-            words = data.split(b'\x00')
-            # print(words)
-            # print(data)
-            # Extract words before each \x00
-            words_before_null=[]
-            words=words[1:-1]
-            for word in words:
-                words_before_null.append(extract_chars_until_number(word))
-            # Flatten the list of words and filter out empty strings
-            # print(words)
-            # print(words_before_null)
-            # flattened_words = [word for sublist in words_before_null for word in sublist if word]
-            wor=""
-            for word in words_before_null:
-                wor+=word.replace(' ','')+"\n"
-            print(wor,end='')
-
-            # for word in flattened_words:
-            #     print(word)
-
-
-
-
-
+def identity(prefix):
+    name = os.getenv(f"GIT_{prefix}_NAME")
+    email = os.getenv(f"GIT_{prefix}_EMAIL")
+    if prefix == "COMMITTER":
+        name = name or os.getenv("GIT_AUTHOR_NAME")
+        email = email or os.getenv("GIT_AUTHOR_EMAIL")
+    if not name or not email:
+        raise ValueError(f"set GIT_{prefix}_NAME and GIT_{prefix}_EMAIL before commit-tree")
+    if any(char in name + email for char in "\r\n<>"):
+        raise ValueError("Git author/committer identity contains invalid characters")
+    raw_date = os.getenv(f"GIT_{prefix}_DATE")
+    if raw_date is None:
+        date = f"{int(time.time())} +0000"
     else:
-        raise RuntimeError(f"Unknown command #{command}")
+        match = INTERNAL_DATE.fullmatch(raw_date)
+        if match is None or int(match.group(2)[1:3]) > 23 or int(match.group(2)[3:]) > 59:
+            raise ValueError(f"GIT_{prefix}_DATE must be '<unix-seconds> +/-HHMM'")
+        date = f"{match.group(1)} {match.group(2)}"
+    return f"{name} <{email}> {date}".encode("utf-8")
+
+
+def commit_tree(tree_sha, message, parents):
+    load_object(tree_sha, "tree")
+    for parent in parents:
+        load_object(parent, "commit")
+    lines = [b"tree " + tree_sha.lower().encode("ascii")]
+    lines.extend(b"parent " + p.lower().encode("ascii") for p in parents)
+    lines.extend([b"author " + identity("AUTHOR"), b"committer " + identity("COMMITTER")])
+    content = b"\n".join(lines) + b"\n\n" + message.encode("utf-8").rstrip(b"\n") + b"\n"
+    return store_object("commit", content)
+
+
+def show_tree(data, names_only=False):
+    output = sys.stdout.buffer
+    for mode, name, sha in tree_entries(data):
+        if names_only:
+            output.write(name + b"\n")
+        else:
+            kind = b"tree" if mode == b"40000" else b"blob"
+            output.write(mode.rjust(6, b"0") + b" " + kind + b" " + sha.encode("ascii") + b"\t" + name + b"\n")
+
+
+def argument_parser():
+    parser = argparse.ArgumentParser(description="Educational Git loose-object commands (SHA-1 only)")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("init", help="initialize .git in the current directory")
+    cat = sub.add_parser("cat-file", help="pretty-print an object")
+    cat.add_argument("-p", action="store_true", required=True)
+    cat.add_argument("sha")
+    hash_command = sub.add_parser("hash-object", help="hash a file as a blob")
+    hash_command.add_argument("-w", action="store_true", help="store the object")
+    hash_command.add_argument("path")
+    sub.add_parser("write-tree", help="snapshot the current directory, not the Git index")
+    ls = sub.add_parser("ls-tree", help="list a tree object")
+    ls.add_argument("--name-only", action="store_true")
+    ls.add_argument("sha")
+    commit = sub.add_parser("commit-tree", help="create an object without updating HEAD")
+    commit.add_argument("tree_sha")
+    commit.add_argument("-p", dest="parents", action="append", default=[])
+    commit.add_argument("-m", dest="message", required=True)
+    return parser
+
+
+def main(argv=None):
+    parser = argument_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "init":
+            (GIT_DIR / "objects").mkdir(parents=True, exist_ok=True)
+            (GIT_DIR / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+            head = GIT_DIR / "HEAD"
+            if not head.exists():
+                head.write_text("ref: refs/heads/main\n", encoding="ascii")
+            print("Initialized git directory")
+        elif args.command == "hash-object":
+            data = Path(args.path).read_bytes()
+            print(store_object("blob", data) if args.w else object_id("blob", data))
+        elif args.command == "cat-file":
+            kind, data = load_object(args.sha)
+            if kind == "tree":
+                show_tree(data)
+            else:
+                sys.stdout.buffer.write(data)
+        elif args.command == "write-tree":
+            print(write_tree(Path.cwd()))
+        elif args.command == "ls-tree":
+            _, data = load_object(args.sha, "tree")
+            show_tree(data, args.name_only)
+        elif args.command == "commit-tree":
+            print(commit_tree(args.tree_sha, args.message, args.parents))
+    except (OSError, ValueError, zlib.error) as exc:
+        print(f"git exercise: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
