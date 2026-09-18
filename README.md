@@ -1,212 +1,70 @@
-# Simple Git Implementation in Python
+# A small Git loose-object implementation in Python
 
-This project is a simplified implementation of some core Git functionalities using Python. It demonstrates how Git manages objects like blobs, trees, and commits under the hood by manually handling hashing, compression, and file storage.
+An educational implementation of selected Git plumbing commands, developed as a [CodeCrafters Build Your Own Git](https://codecrafters.io/challenges/git) exercise. The code builds and reads Git-compatible **SHA-1 loose objects** to make blob, tree, and commit storage understandable. It is not a Git replacement or a full version-control system.
 
-## Table of Contents
+The implementation lives in [`app/main.py`](app/main.py). The [`your_program.sh`](your_program.sh) launcher invokes that module; there is no `git.py` file. It uses only the Python standard library. The CodeCrafters runner configuration is in [`codecrafters.yml`](codecrafters.yml).
 
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Initialize Repository](#initialize-repository)
-  - [Hash Object](#hash-object)
-  - [Cat File](#cat-file)
-  - [Write Tree](#write-tree)
-  - [Commit Tree](#commit-tree)
-  - [List Tree](#list-tree)
-- [Author](#author)
-- [License](#license)
+## Quickstart
 
-## Features
+Requires Python 3 and a Unix-like shell. Use an **empty, disposable working directory**: `init` creates `.git` where you run the command, not where the source code is stored. Substitute your actual checkout path for `REPO_DIR`.
 
-- **Initialize Repository**: Create a new Git repository by setting up the necessary `.git` directory structure.
-- **Hash Object**: Create a blob object from a file and store it in the `.git/objects` directory.
-- **Cat File**: Retrieve and display the content of a Git object (blob, tree, commit) by its SHA-1 hash.
-- **Write Tree**: Generate a tree object representing the current directory structure and store it in the `.git/objects` directory.
-- **Commit Tree**: Create a commit object that references a tree object and optionally a parent commit.
-- **List Tree**: Display the contents of a tree object in a human-readable format.
-
-## Prerequisites
-
-- Python 3.x installed on your system.
-- Basic understanding of Git and its internal workings.
-- Operating system with support for Python file operations (tested on Unix-like systems).
-
-## Installation
-
-1. **Clone the Repository**
-
-   ```bash
-   git clone https://github.com/yourusername/simple-git-python.git
-   ```
-
-2. **Navigate to the Project Directory**
-
-   ```bash
-   cd simple-git-python
-   ```
-
-3. **Ensure Dependencies are Met**
-
-   This script uses standard Python libraries, so no additional packages are required.
-
-## Usage
-
-Run the script using the Python interpreter followed by the desired command and its arguments.
-
-```bash
-python git.py <command> [arguments]
+```sh
+REPO_DIR=/absolute/path/to/your/checkout/of/git
+mkdir -p /tmp/git-exercise-demo
+cd /tmp/git-exercise-demo
+sh "$REPO_DIR/your_program.sh" init
+printf 'hello Git\n' > hello.txt
+sh "$REPO_DIR/your_program.sh" hash-object -w hello.txt
+sh "$REPO_DIR/your_program.sh" write-tree
 ```
 
-### Initialize Repository
+The last two commands print 40-character SHA-1 IDs. To inspect objects, copy the printed IDs into the commands below:
 
-Sets up a new Git repository in the current directory by creating the necessary `.git` folders and files.
-
-**Command**
-
-```bash
-python git.py init
+```sh
+sh "$REPO_DIR/your_program.sh" cat-file -p <blob-sha>
+sh "$REPO_DIR/your_program.sh" ls-tree --name-only <tree-sha>
 ```
 
-**Output**
+Angle-bracket IDs above are placeholders, not literal shell arguments. To create a commit object, set your own identity and use the printed tree ID:
 
-```
-Initialized git directory
-```
-
-### Hash Object
-
-Creates a blob object from a specified file and stores it in the `.git/objects` directory.
-
-**Command**
-
-```bash
-python git.py hash-object -w <file_path>
+```sh
+export GIT_AUTHOR_NAME='Your Name' GIT_AUTHOR_EMAIL='you@example.com'
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+sh "$REPO_DIR/your_program.sh" commit-tree <tree-sha> -m 'Initial snapshot'
 ```
 
-**Parameters**
+`commit-tree` only writes an object: it does **not** advance `HEAD` or create a branch. Pass `-p <commit-sha>` to provide a parent. For reproducible hashes, you can set `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` to Git's internal `<unix-seconds> +/-HHMM` format.
 
-- `-w`: Write the object to the object database.
-- `<file_path>`: Path to the file to be hashed.
+## Commands and implementation
 
-**Example**
+| Command | What this implementation does |
+| --- | --- |
+| `init` | Creates `.git/objects`, `.git/refs/heads`, and a symbolic `HEAD` pointing to `main`; rerunning does not overwrite an existing `HEAD`. |
+| `hash-object [-w] <path>` | Computes a blob SHA-1 from **raw bytes** and optionally writes the zlib-compressed loose object. |
+| `cat-file -p <sha>` | Reads a loose blob, tree, or commit; checks its SHA-1 and declared size; writes blob bytes unchanged. |
+| `write-tree` | Recursively snapshots the **working directory** (not Git's staging index), excluding `.git` and empty directories. |
+| `ls-tree [--name-only] <tree-sha>` | Parses binary tree entries and lists names or modes, object types, IDs, and names. |
+| `commit-tree <tree-sha> -m <message> [-p <parent-sha>]` | Creates a commit with explicit identity and optional parent object(s). |
 
-```bash
-python git.py hash-object -w example.txt
+Object records are encoded as `type + space + decimal byte length + NUL + raw content`, hashed with SHA-1, and stored in `.git/objects/aa/<remaining-38-hex-digits>` after zlib compression. Tree records contain an octal mode, raw filename bytes, NUL, and a 20-byte binary object ID. See [Git's loose-object format](https://git-scm.com/docs/gitformat-loose), [tree listing](https://git-scm.com/docs/git-ls-tree), and [commit-tree](https://git-scm.com/docs/git-commit-tree) for the reference behavior.
+
+The implementation uses normal/executable modes and stores symlink targets as blobs on Unix-like systems. Files and directories are ordered using Git's directory-as-`name/` sort rule. Identity is supplied through `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, and optional committer counterparts; the project does not invent a developer's email in commit objects.
+
+## Run the tests
+
+From this repository's root, with Git installed:
+
+```sh
+python3 -m unittest discover -s tests -v
 ```
 
-**Output**
+The tests run the shell launcher in temporary directories and compare generated blob, tree, and commit IDs and output with an independently installed Git executable. They also test corrupt objects, CLI errors, missing identity, empty directories, symlinks, binary data, and repeat writes. Tests were run locally with Python 3.13 and Git 2.47.3; CodeCrafters' private test suite was not run here.
 
-```
-<sha1_hash_of_the_blob>
-```
+## Scope and limitations
 
-### Cat File
+- Only a `.git` directory **in the current working directory** and SHA-1 **loose objects** are supported; there is no packed-object, SHA-256, tag creation, remote, index, checkout, diff, merge, or branch-management implementation.
+- Unlike real [`git write-tree`](https://git-scm.com/docs/git-write-tree), this `write-tree` scans working-directory files directly. It includes otherwise untracked or ignored files and skips `.git` directories; do not run it on a sensitive or large working directory.
+- Standard listing uses raw filename bytes rather than Git's exact quoting rules for unusual filenames. It is intended for typical local educational exercises, not untrusted repositories or arbitrary large objects.
+- The demonstration writes objects but does not update references; use a disposable directory rather than an existing valuable repository.
 
-Displays the content of a Git object identified by its SHA-1 hash.
-
-**Command**
-
-```bash
-python git.py cat-file -p <object_sha>
-```
-
-**Parameters**
-
-- `-p`: Pretty-print the contents of the object.
-- `<object_sha>`: SHA-1 hash of the object to display.
-
-**Example**
-
-```bash
-python git.py cat-file -p e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-```
-
-**Output**
-
-```
-<content_of_the_object>
-```
-
-### Write Tree
-
-Generates a tree object representing the current directory structure and stores it in the `.git/objects` directory.
-
-**Command**
-
-```bash
-python git.py write-tree
-```
-
-**Output**
-
-```
-<sha1_hash_of_the_tree>
-```
-
-### Commit Tree
-
-Creates a commit object that references a tree object and optionally a parent commit.
-
-**Command**
-
-```bash
-python git.py commit-tree <tree_sha> -m "<commit_message>" [-p <parent_sha>]
-```
-
-**Parameters**
-
-- `<tree_sha>`: SHA-1 hash of the tree object to commit.
-- `-m`: Commit message.
-- `-p`: (Optional) SHA-1 hash of the parent commit.
-
-**Example**
-
-```bash
-python git.py commit-tree a1b2c3d4 -m "Initial commit"
-```
-
-**Output**
-
-```
-<sha1_hash_of_the_commit>
-```
-
-### List Tree
-
-Displays the contents of a tree object in a human-readable format.
-
-**Command**
-
-```bash
-python git.py ls-tree <tree_sha>
-```
-
-**Parameters**
-
-- `<tree_sha>`: SHA-1 hash of the tree object to list.
-
-**Example**
-
-```bash
-python git.py ls-tree d4c3b2a1
-```
-
-**Output**
-
-```
-<list_of_files_and_directories_in_the_tree>
-```
-
-## Author
-
-**Omar Saqr**
-- Email: [omar_saqr@example.com](mailto:omar_saqr@example.com)
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
-
----
-
-**Note**: This implementation is for educational purposes and does not cover all features and edge cases of the actual Git version control system. Use it to understand the fundamentals of how Git works internally.
+This repository contains no standalone license file. No license grant is asserted by this README.
